@@ -54,7 +54,7 @@ reqHeaders.Add "Content-Type", "application/x-www-form-urlencoded"
 response = libHTTP.sendHTTPRequest(client.TOKENENDPOINT, httpMethod_post, "grant_type=client_credentials", reqHeaders, queryParams, client.CLIENTID, client.CLIENTSECRET)
 
 If response.status <> httpResponseOk Then
-    Debug.Print "No credentials file found in the required path/file malformed."
+    Debug.Print "Could not get a valid token for the provided client. Token endpoint response: " & response.text
     requestNewToken = False
     Exit Function
 End If
