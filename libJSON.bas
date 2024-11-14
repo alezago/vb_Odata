@@ -1,8 +1,69 @@
 Attribute VB_Name = "libJSON"
+'**************************************************************
+'* libJSON: Library for Parsing JSON in VBA
+'**************************************************************
+'* Author: Alessandro Zago
+'* Last Modified: 12/11/2024
+'* Version: 2.0.0
+'**************************************************************
+'* This library allows the retrieval of specific fields from an Object in JSON notation
+'* It supports:
+'*     - all elementary field types (string, number, boolean, null, NaN)
+'*     - complex field types (object, array)
+'*     - direct retrieval from fields in nested objects by providing a direct path parameter (i.e: parentObj/nestedObj1/nestedObj2/fieldName)
+'*     - automatic conversion of the return value to the correct (VBA) Data Type, based on the field type in the JSON Object (see table below)
+'*     - possibility to specify a custom return value in case of null / NaN fields, or for fields not found in the object
+'*     - robust handling of escaped quotes in strings
+'*     - direct retrieval of subFields from Nested Objects (with the synthax field/subField/subSubField)
+'*     - parsing of JSON Arrays
+'*
+'* Important Notes:
+'*     -  This library is NOT a JSON validator. It should be used only on complete and valid JSON objects. Using it on incomplete/invalid JSON objects can lead to unexpected results/errors.
+'*     -  Arrays of objects are returned in VBA as arrays of Strings. Each element can then be parsed individually/in a loop for their respective field.
+'*     -  Sub-Objects are returned as strings. These can be further parsed for their fields with the same method.
+'*
+'* Provided (Public) Functions and parameters:
+'*     - getJSONFieldValue: parses a JSON Object provided as a String, and returns the value for a specific field.
+'*           JsonString [String]: a String containing a (valid) JSON Object.
+'*           fieldName [String]: a String containing the Path to the requested field. In case of nested objects, subfields can be retrieved with the "a/b/c/d" synthax
+'*           valueIfNotFound [Variant][Optional]: the value to be returned in case the requested field is not found in the object. Defaults to the "" (empty) String
+'*           valueIfNull [Variant][Optional]: the value to be returned in case the requested field is null. Defaults to the "null" String.
+'*           valueIfNaN [Variant][Optional]: the value to be returned in case the requested field is NaN. Defaults to the "NaN" String.
+'*     - getJSONArrayValue: parses a JSON Array provided as string, and returns an array of Strings.
+'*           JsonArray: the JSON Array to be parsed, provided as a String.
+'*
+'* Return Types
+'* String fields are returned as String values.
+'* Numeric fields are returned as Integer or Double values (based on the original value).
+'* Boolean fields are returned as Boolean values.
+'* null fields return type can be customized on demand through an optional parameter provided to the parsing function
+'* NaN fields return type can be customized on demand through an optional parameter provided to the parsing function
+'* Object fields are returned as String values.
+'* Array fields are returned as an Array of String values.
+'*
+'**************************************************************
 Option Explicit
 
-Private Const version_major As Integer = 1
-Private Const version_minor As Integer = 0
+'Control Characters
+Private Const CHAR_COLON As String = ":"
+Private Const CHAR_COMMA As String = ","
+Private Const CHAR_QUOTE As String = """"
+Private Const CHAR_OPEN_OBJECT As String = "{"
+Private Const CHAR_CLOSE_OBJECT As String = "}"
+Private Const CHAR_OPEN_ARRAY As String = "["
+Private Const CHAR_CLOSE_ARRAY As String = "]"
+
+'Escaping
+Private Const CHAR_ESCAPED_BACKSLASH As String = "\\"
+Private Const CHAR_ESCAPED_QUOTE As String = "\"""
+Private Const CHAR_ESCAPED_BACKSLASH_SANITIZED As String = "%ESCAPEDBACKSLASH%"
+Private Const CHAR_ESCAPED_QUOTE_SANITIZED As String = "%ESCAPEDQUOTESANITIZED%"
+
+'Constant Values/Strings
+Private Const VALUE_NULL As String = "null"
+Private Const VALUE_NAN As String = "NaN"
+Private Const VALUE_TRUE As String = "true"
+Private Const VALUE_FALSE As String = "false"
 
 Public Enum JSONFieldType
     JSONFieldType_literal = 1
@@ -11,520 +72,600 @@ Public Enum JSONFieldType
     JSONFieldType_float = 4
     JSONFieldType_object = 5
     JSONFieldType_bool = 6
+    JSONFieldType_null = 7
+    JSONFieldType_nan = 8
+    
     'Other (Supported) Types?
-    JSONFieldType_unknown = -1
+    JSONFieldType_unknown = -1     'Shouldn't occur, errors should be catched sooner
+    JSONFieldType_No_Field = -2    'Used internally, when there are no more fields to parse
 End Enum
 
+'Key-Value pair. Used in parsing to detect and store information about a k-v pair in a JSON object. All indexes are 1-Based
+Public Type JSONKeyValuePair
+    key As String
+    keyStartIndex As Long
+    keyEndIndex As Long
+    value As String
+    valueStartIndex As Long
+    valueEndIndex As Long
+    valueType As JSONFieldType
+End Type
+
+Private Type searchResult
+    term As String
+    position As Long
+End Type
+
 Public Const JSON_PATH_DELIMITER As String = "/"
-Public Const JSON_EMPTY_OBJECT = "{}"
 
-'Fast implementation for getJSONFieldValue
-Private Function getJSONFieldValue_f(jsonString As String, fieldName As String, valueType As JSONFieldType, Optional startFrom As Long = 1, Optional valueIfNotFound As Variant = "") As Variant
+Private Function sanitizeJSON(JSONStr As String) As String
 
-Dim tempJSON As String
-Dim pathArr() As String
-Dim nodeSearchString As String
-Dim count As String
-Dim startPos As Long, endPos As Long, endPos2 As Long
+sanitizeJSON = Replace(Replace(Trim(JSONStr), CHAR_ESCAPED_BACKSLASH, CHAR_ESCAPED_BACKSLASH_SANITIZED), CHAR_ESCAPED_QUOTE, CHAR_ESCAPED_QUOTE_SANITIZED)
 
-'remove unnecessary characters from start/end, and newlines, and in case start position is not 1 then also ignore all characters until the start position
-tempJSON = Trim(Replace(Replace(Right(jsonString, Len(jsonString) - startFrom + 1), vbCrLf, ""), vbCr, ""))
+End Function
 
-'workaround to parse JSON arrays
-'creates a normal JSON with an array field, named JSONARRAY
-If fieldName = "" And valueType = JSONFieldType_array Then
-    tempJSON = "{""JSONARRAY"": " & tempJSON & "}"
+Private Function restoreJSON(JSONStr As String) As String
+
+restoreJSON = Replace(Replace(JSONStr, CHAR_ESCAPED_QUOTE_SANITIZED, CHAR_ESCAPED_QUOTE), CHAR_ESCAPED_BACKSLASH_SANITIZED, CHAR_ESCAPED_BACKSLASH)
+
+End Function
+
+Private Function getFirstOccurringCharIndex(text As String, startPosition As Long, listOfControlChars() As Variant) As searchResult
+
+Dim pos As Long
+Dim currentMin As Long
+Dim currentCharIndex As Integer
+Dim i As Integer
+
+For i = LBound(listOfControlChars) To UBound(listOfControlChars)
+    pos = InStr(startPosition, text, listOfControlChars(i))
+    If currentMin = 0 Or (pos > 0 And pos < currentMin) Then
+        currentMin = pos
+        currentCharIndex = i
+    End If
+Next i
+
+Dim ret As searchResult
+
+ret.position = currentMin
+ret.term = listOfControlChars(currentCharIndex)
+
+getFirstOccurringCharIndex = ret
+
+End Function
+
+Private Function getArrayEnd(JsonString As String, arrayOpenIndex As Long) As Long
+
+If Mid(JsonString, arrayOpenIndex, 1) <> CHAR_OPEN_ARRAY Then
+    Err.Raise 500, , "libJSON: getArrayEnd: start character for array is not ["
 End If
 
-'check that the first non blank character is a {
-If Left(tempJSON, 1) <> "{" Then
-    Debug.Print "getJSONFieldValue: the provided JSON String is not a valid JSON object, missing '{' at the start."
-    getJSONFieldValue_f = valueIfNotFound
-    Exit Function
+Dim inString As Boolean
+Dim currentPos As Long
+
+Dim searchTerms() As Variant
+Dim searchResult As searchResult
+
+Dim arrayLevel As Integer
+
+'Initialization
+inString = False
+currentPos = arrayOpenIndex + 1
+arrayLevel = 1
+
+Do While currentPos < Len(JsonString) And arrayLevel >= 1
+    
+    If inString Then
+        searchTerms = Array(CHAR_QUOTE)
+    Else
+        searchTerms = Array(CHAR_QUOTE, CHAR_OPEN_ARRAY, CHAR_CLOSE_ARRAY)
+    End If
+    searchResult = getFirstOccurringCharIndex(JsonString, currentPos, searchTerms)
+    
+    'Validation
+    If searchResult.position <= 0 Then
+        Err.Raise 500, , "libJSON: getArrayEnd: unexpected end of string, malformed json."
+    End If
+    
+    Select Case searchResult.term
+        Case CHAR_QUOTE
+            inString = Not inString
+        Case CHAR_OPEN_ARRAY
+            arrayLevel = arrayLevel + 1
+        Case CHAR_CLOSE_ARRAY
+            arrayLevel = arrayLevel - 1
+    End Select
+    
+    currentPos = searchResult.position + 1
+
+Loop
+
+getArrayEnd = currentPos - 1
+
+End Function
+
+Private Function parseObject(JsonString As String, objectOpenIndex As Long) As String
+
+If Mid(JsonString, objectOpenIndex, 1) <> CHAR_OPEN_OBJECT Then
+    Err.Raise 500, , "libJSON: parseObject: start character for object is not {"
 End If
 
-'split the path into an array, so it can be easily navigated from root to leaves
-If fieldName = "" Or fieldName = "." Then
-    pathArr = Split("JSONARRAY", JSON_PATH_DELIMITER)
-ElseIf Left(fieldName, 2) = "./" Then
-    pathArr = Split(Right(fieldName, Len(fieldName) - 2), JSON_PATH_DELIMITER)
-Else
-    pathArr = Split(fieldName, JSON_PATH_DELIMITER)
+Dim objStr As String
+
+objStr = Mid(JsonString, objectOpenIndex, getObjectEnd(JsonString, objectOpenIndex) - objectOpenIndex)
+parseObject = restoreJSON(objStr)
+
+End Function
+
+Private Function parseArray(JsonString As String, arrayOpenIndex As Long) As String()
+
+If Mid(JsonString, arrayOpenIndex, 1) <> CHAR_OPEN_ARRAY Then
+    Err.Raise 500, , "libJSON: parseArray: start character for array is not ["
 End If
 
-'for the fast implementation, we only consider the leaf element
-nodeSearchString = """" & pathArr(UBound(pathArr)) & """:"
+Dim inString As Boolean
+Dim currentPos As Long
+Dim currentElementStartIndex As Long
 
-startPos = InStr(startFrom, tempJSON, nodeSearchString)
+Dim searchTerms() As Variant
+Dim searchResult As searchResult
 
-If startPos < 1 Then
-    getJSONFieldValue_f = valueIfNotFound
-    Exit Function
-End If
+Dim inArray As Boolean
 
-startPos = InStr(startPos, tempJSON, ":")
+Dim output() As String
+Dim elemCount As Integer
+Dim tempElement As String
 
-If valueType = JSONFieldType_literal Then
+'Initialization
+inString = False
+
+inArray = True
+
+elemCount = 0
+currentPos = arrayOpenIndex + 1
+currentElementStartIndex = currentPos
+
+Do While currentPos <= Len(JsonString) And inArray
+    
+    If inString Then
+        searchTerms = Array(CHAR_QUOTE)
+    Else
+        searchTerms = Array(CHAR_QUOTE, CHAR_OPEN_OBJECT, CHAR_OPEN_ARRAY, CHAR_COMMA, CHAR_CLOSE_ARRAY)
+    End If
+    searchResult = getFirstOccurringCharIndex(JsonString, currentPos, searchTerms)
+    
+    If searchResult.position <= 0 Then
+        Err.Raise 500, , "libJSON: getArrayEnd: unexpected end of string, malformed json."
+    End If
+    
+    Select Case searchResult.term
+        Case CHAR_QUOTE
+            inString = Not inString
+            currentPos = searchResult.position + 1
+        
+        Case CHAR_OPEN_OBJECT
+            currentPos = getObjectEnd(JsonString, searchResult.position) + 1
             
-                startPos = InStr(startPos, tempJSON, """", vbTextCompare) + 1
-                endPos = InStr(startPos, tempJSON, """", vbTextCompare)
-                
-                getJSONFieldValue_f = Mid(tempJSON, startPos, endPos - startPos)
-                
-            ElseIf valueType = JSONFieldType_number Then
-                
-                endPos = InStr(startPos, tempJSON, ",", vbTextCompare)
-                endPos2 = InStr(startPos, tempJSON, "}", vbTextCompare)
-                
-                If endPos < endPos2 And endPos <> 0 Then
-                    getJSONFieldValue_f = CLng(Trim(Mid(tempJSON, startPos, endPos - startPos)))
+        Case CHAR_OPEN_ARRAY
+            'In case of nested arrays, skip all the nested objects
+            currentPos = getArrayEnd(JsonString, searchResult.position) + 1
+            
+        Case CHAR_COMMA
+            'In case a comma is reached, add the element up to the character to the output
+            If utilities.isArrayInitialized(output) Then
+                ReDim Preserve output(0 To elemCount)
+            Else
+                ReDim output(0 To 0)
+            End If
+            
+            'Add the new element to the output
+            tempElement = Trim(Mid(JsonString, currentElementStartIndex, searchResult.position - currentElementStartIndex))
+            output(elemCount) = restoreJSON(tempElement)
+            
+            'Update internal state for next element
+            elemCount = elemCount + 1
+            currentElementStartIndex = searchResult.position + 1
+            currentPos = searchResult.position + 1
+        
+        Case CHAR_CLOSE_ARRAY
+            'Add the last element to the array before exiting the loop
+            'In this case, verify that the array is not an empty array
+            tempElement = Trim(Mid(JsonString, currentElementStartIndex, searchResult.position - currentElementStartIndex))
+            If tempElement <> "" Then
+                If utilities.isArrayInitialized(output) Then
+                    ReDim Preserve output(0 To elemCount)
                 Else
-                    getJSONFieldValue_f = CLng(Trim(Mid(tempJSON, startPos, endPos2 - startPos)))
-                End If
-                
-            ElseIf valueType = JSONFieldType_float Then
-                
-                endPos = InStr(startPos, tempJSON, ",", vbTextCompare)
-                endPos2 = InStr(startPos, tempJSON, "}", vbTextCompare)
-                
-                If endPos < endPos2 And endPos <> 0 Then
-                    getJSONFieldValue_f = val(Replace(Trim(Mid(tempJSON, startPos, endPos - startPos)), ".", ","))
-                Else
-                    getJSONFieldValue_f = val(Replace(Trim(Mid(tempJSON, startPos, endPos2 - startPos)), ".", ","))
-                End If
-            ElseIf valueType = JSONFieldType_array Then
-                
-                Dim returnArr() As String
-                Dim arrLevel As Integer
-                Dim inArray As Boolean
-                Dim arrayPos As Long
-                Dim elemStart As Long
-                Dim elemCount As Integer
-                
-                inArray = True
-                arrLevel = 0
-                elemCount = 0
-                
-                arrayPos = InStr(startPos, tempJSON, "[", vbTextCompare) + 1
-                
-                While inArray
-                    If arrLevel = 0 Then
-                        'valid continuations:
-                        '    ]  - close array
-                        '    {  - new object (only first object in list
-                        '    ,{ - new object (from second onwards)
-                        'SORRY FOR THE NAMING OF VARIABLES
-                        
-                        startPos = InStr(arrayPos, tempJSON, "]", vbTextCompare)
-                        If startPos <= 0 Then
-                            Debug.Print "getJSONFieldValue: list at path " & fieldName & " doesn't have a matching closing bracket (])."
-                            getJSONFieldValue_f = valueIfNotFound
-                            Exit Function
-                        End If
-                        
-                        endPos = InStr(arrayPos, tempJSON, "{", vbTextCompare)
-                        
-                        '
-                        If startPos < endPos Or endPos = 0 Then
-                            getJSONFieldValue_f = returnArr
-                            Exit Function
-                        Else
-                            
-                            arrayPos = endPos + 1
-                            elemStart = endPos
-                            arrLevel = arrLevel + 1
-                            
-                        End If
-                        
-                    ElseIf arrLevel > 0 Then
-                        
-                        'valid continuations:
-                        '    { - increase level by one (may be missing)
-                        '    } - decrease level by one (must be present)
-                        startPos = InStr(arrayPos, tempJSON, "{", vbTextCompare)
-                        endPos = InStr(arrayPos, tempJSON, "}", vbTextCompare)
-                        
-                        If startPos = 0 Or endPos < startPos Then
-                            arrLevel = arrLevel - 1
-                            
-                            'if we returned to level 0, we isolated a new array element
-                            If arrLevel = 0 Then
-                                ReDim Preserve returnArr(0 To elemCount)
-                                returnArr(elemCount) = Mid(tempJSON, elemStart, endPos - elemStart + 1)
-                                elemCount = elemCount + 1
-                            End If
-                            
-                            arrayPos = endPos + 1
-                            
-                        Else
-                            
-                            arrLevel = arrLevel + 1
-                            arrayPos = startPos + 1
-                            
-                        End If
-                        
-                    End If
-                Wend
-            ElseIf valueType = JSONFieldType_bool Then
-                
-                endPos = InStr(startPos, tempJSON, ",", vbTextCompare)
-                endPos2 = InStr(startPos, tempJSON, "}", vbTextCompare)
-                
-                If endPos < endPos2 And endPos <> 0 Then
-                    getJSONFieldValue_f = CBool(Trim(Mid(tempJSON, startPos, endPos - startPos)))
-                Else
-                    getJSONFieldValue_f = CBool(Trim(Mid(tempJSON, startPos, endPos2 - startPos)))
+                    ReDim output(0 To 0)
                 End If
             
-            ElseIf valueType = JSONFieldType_object Then
-                
-                Dim objectStart As Long, currentPosition As Long
-                Dim relativeLevel As Integer
-                
-                objectStart = InStr(startPos, tempJSON, "{", vbTextCompare)
-                currentPosition = objectStart + 1
-                
-                relativeLevel = 1
-                
-                While currentPosition <= Len(tempJSON) And currentPosition > 0
-                
-                    startPos = InStr(currentPosition, tempJSON, "{", vbTextCompare)
-                    endPos = InStr(currentPosition, tempJSON, "}", vbTextCompare) 'this should never be 0, as there must be a closing bracket at the very end of the object
+                'Add the new element to the output
+                output(elemCount) = restoreJSON(tempElement)
+            
+            Else
+                If utilities.isArrayInitialized(output) = False Then
+                    'Initialize with empty array
+                    output = Split(Empty)
                     
-                    If startPos > 0 And startPos < endPos Then    'increase level
-                        relativeLevel = relativeLevel + 1
-                        currentPosition = startPos + 1
-                        
-                    Else    'decrease level
-                        relativeLevel = relativeLevel - 1
-                        currentPosition = endPos + 1
-                    End If
-                    
-                    'check if the character was the closing character
-                    If relativeLevel = 0 Then
-                        getJSONFieldValue_f = Trim(Mid(tempJSON, objectStart, endPos - objectStart + 1))
-                        Exit Function
-                    End If
-                Wend
-            ElseIf valueType = JSONFieldType_unknown Then
-            
-                endPos = InStr(startPos, tempJSON, ",", vbTextCompare)
-                endPos2 = InStr(startPos, tempJSON, "}", vbTextCompare)
-                
-                If endPos < endPos2 And endPos <> 0 Then
-                    getJSONFieldValue_f = Trim(Mid(tempJSON, startPos, endPos - startPos))
-                Else
-                    getJSONFieldValue_f = Trim(Mid(tempJSON, startPos, endPos2 - startPos))
                 End If
             End If
+            
+            inArray = False
+    
+    End Select
+    
+Loop
+
+parseArray = output
+
+End Function
+
+Private Function parseLiteral(str As String) As String
+parseLiteral = restoreJSON(str)
+End Function
+
+Private Function parseInteger(numString As String) As Integer
+parseInteger = CInt(numString)
+End Function
+
+Private Function parseDecimal(numString As String) As Double
+
+parseDecimal = CDbl(Replace(numString, ".", Application.International(xlDecimalSeparator)))
+
+End Function
+
+Private Function parseBool(boolString As String) As Boolean
+
+If boolString = VALUE_TRUE Then
+    parseBool = True
+ElseIf boolString = VALUE_FALSE Then
+    parseBool = False
+Else
+    Err.Raise 500, , "libJSON: parseBool: provided value is not a Boolean value (true/false): " & boolString
+End If
+
+End Function
+
+Private Function getObjectEnd(JsonString As String, objectOpenIndex As Long) As Long
+
+If Mid(JsonString, objectOpenIndex, 1) <> CHAR_OPEN_OBJECT Then
+    Err.Raise 500, , "libJSON: getObjectEnd: start character for object is not {"
+End If
+
+Dim inString As Boolean
+Dim currentPos As Long
+
+Dim searchTerms() As Variant
+Dim searchResult As searchResult
+
+Dim nestingLevel As Integer
+
+'Initialization
+inString = False
+currentPos = objectOpenIndex + 1
+nestingLevel = 1
+
+Do While currentPos < Len(JsonString) And nestingLevel >= 1
+    
+    If inString Then
+        searchTerms = Array(CHAR_QUOTE)
+    Else
+        searchTerms = Array(CHAR_QUOTE, CHAR_OPEN_OBJECT, CHAR_CLOSE_OBJECT)
+    End If
+    searchResult = getFirstOccurringCharIndex(JsonString, currentPos, searchTerms)
+    
+    'Validation
+    If searchResult.position <= 0 Then
+        Err.Raise 500, , "libJSON: getObjectEnd: unexpected end of string, malformed json."
+    End If
+    
+    Select Case searchResult.term
+        Case CHAR_QUOTE
+            inString = Not inString
+        Case CHAR_OPEN_OBJECT
+            nestingLevel = nestingLevel + 1
+        Case CHAR_CLOSE_OBJECT
+            nestingLevel = nestingLevel - 1
+    End Select
+    
+    currentPos = searchResult.position + 1
+
+Loop
+
+getObjectEnd = currentPos - 1
+
+End Function
+
+'Traverses a JSON Object horizontally, getting the next available keyValue pair
+'ObjectStart should be always {
+'ObjectEnd should be always }
+'all indexes are 1-based (as returned from Excel Instr function)
+Private Function getNextKeyOnLevel(JsonString As String, objectOpenIndex As Long, startFromIndex As Long) As JSONKeyValuePair
+
+'Basic Validation
+If Mid(JsonString, objectOpenIndex, 1) <> CHAR_OPEN_OBJECT Then
+    Err.Raise 500, , "libJSON: ERROR: getNextKeyOnLevel: the substring provided starting at " & objectOpenIndex & " is not a valid JSON Object"
+End If
+
+If startFromIndex < objectOpenIndex Then
+    Err.Raise 500, , "libJSON: ERROR: getNextKeyOnLevel: startFromIndex parameter is out of bounds (value provided: " & startFromIndex & ", objects starts at " & objectOpenIndex & ")"
+End If
+
+Dim searchTerms() As Variant
+Dim searchResult As searchResult
+
+Dim posKeyOpen As Long
+Dim posKeyClose As Long
+Dim posCurrent As Long
+
+Dim tempChar As String
+
+Dim returnValue As JSONKeyValuePair
+
+'At the beginning, check if there is actually some more key to parse
+searchTerms = Array(CHAR_CLOSE_OBJECT, CHAR_QUOTE)
+searchResult = getFirstOccurringCharIndex(JsonString, startFromIndex, searchTerms)
+
+If searchResult.term = CHAR_CLOSE_OBJECT Then
+    returnValue.valueType = JSONFieldType_No_Field
+    getNextKeyOnLevel = returnValue
+    Exit Function
+End If
+
+posKeyOpen = searchResult.position
+
+'do not exceed the object boundaries
+If posKeyOpen <= 0 Or posKeyOpen > Len(JsonString) Then
+    Err.Raise 500, , "libJson: getNextKeyOnLevel: something went wrong (DEBUGGING)"
+End If
+
+posKeyClose = InStr(posKeyOpen + 1, JsonString, CHAR_QUOTE)
+
+'do not exceed the object boundaries
+If posKeyClose <= 0 Or posKeyClose > Len(JsonString) Then
+    Err.Raise 500, , "libJSON: ERROR: getNextKeyOnLevel: detected opening quotes at char. " & posKeyOpen & " without corresponding closing."
+End If
+
+returnValue.key = restoreJSON(Mid(JsonString, posKeyOpen + 1, posKeyClose - posKeyOpen - 1))
+returnValue.keyStartIndex = posKeyOpen
+returnValue.keyEndIndex = posKeyClose
+
+posCurrent = posKeyClose + 1
+
+'skip any whitespace present between the end of the key and the colon
+Do While Mid(JsonString, posCurrent, 1) = " " And posCurrent <= Len(JsonString)
+    posCurrent = posCurrent + 1
+Loop
+
+'Validation: key without value
+If posCurrent = Len(JsonString) Then
+    Err.Raise 500, , "libJSON: ERROR: getNextKeyOnLevel: key " & returnValue.key & " does not have an associated value within the object starting at " & objectOpenIndex
+End If
+
+'Validation: missing colon after key
+If Mid(JsonString, posCurrent, 1) <> CHAR_COLON Then
+    Err.Raise 500, , "libJSON: ERROR: getNextKeyOnLevel: unexpected character after key " & returnValue.key & " in object starting at " & objectOpenIndex
+End If
+
+posCurrent = posCurrent + 1
+'skip any whitespace present between the colon and the value
+Do While Mid(JsonString, posCurrent, 1) = " " And posCurrent <= Len(JsonString)
+    posCurrent = posCurrent + 1
+Loop
+
+'attempt to detect the output type based on the next character
+'For some types, also directly parses the value
+'Possible Types:
+'    Literal              (PARSED)
+'    Numeric              (PARSED)
+'    Boolean (true/false) (PARSED)
+'    Null                 (PARSED)
+'    NaN                  (PARSED)
+'    Array                (parsing deferred)
+'    Object               (parsing deferred)
+
+If Mid(JsonString, posCurrent, 1) = CHAR_QUOTE Then    'Literal
+    returnValue.valueType = JSONFieldType_literal
+    returnValue.valueStartIndex = posCurrent
+    posCurrent = InStr(posCurrent + 1, JsonString, CHAR_QUOTE)
+    returnValue.valueEndIndex = posCurrent
+    returnValue.value = Mid(JsonString, returnValue.valueStartIndex + 1, returnValue.valueEndIndex - returnValue.valueStartIndex - 1)
+    returnValue.value = restoreJSON(returnValue.value)
+    
+ElseIf IsNumeric(Mid(JsonString, posCurrent, 1)) Or Mid(JsonString, posCurrent, 1) = "-" Then    'Numeric
+    
+    returnValue.valueStartIndex = posCurrent
+    returnValue.value = Mid(JsonString, posCurrent, 1)
+    
+    Dim hasDecimalSep As Boolean
+    tempChar = Mid(JsonString, posCurrent + 1, 1)
+    
+    Do While (IsNumeric(tempChar) Or (hasDecimalSep = False And tempChar = ".")) And posCurrent + 1 < Len(JsonString)
+        returnValue.value = returnValue.value & tempChar
+        If tempChar = "." Then
+            hasDecimalSep = True
+        End If
+            
+        posCurrent = posCurrent + 1
+        tempChar = Mid(JsonString, posCurrent + 1, 1)
+    Loop
+    
+    If hasDecimalSep Then
+        returnValue.valueType = JSONFieldType_float
+    Else
+        returnValue.valueType = JSONFieldType_number
+    End If
+    
+    returnValue.valueEndIndex = posCurrent
+    
+    
+ElseIf Mid(JsonString, posCurrent, 4) = VALUE_TRUE Then    'Boolean
+    
+    returnValue.valueType = JSONFieldType_bool
+    returnValue.valueStartIndex = posCurrent
+    returnValue.valueEndIndex = posCurrent + 3
+    returnValue.value = VALUE_TRUE
+    
+    posCurrent = posCurrent + 4
+
+ElseIf Mid(JsonString, posCurrent, 5) = VALUE_FALSE Then    'Boolean
+        
+    returnValue.valueType = JSONFieldType_bool
+    returnValue.valueStartIndex = posCurrent
+    returnValue.valueEndIndex = posCurrent + 4
+    returnValue.value = VALUE_FALSE
+    
+    posCurrent = posCurrent + 5
+
+ElseIf Mid(JsonString, posCurrent, 4) = VALUE_NULL Then    'null
+
+    returnValue.valueType = JSONFieldType_null
+    returnValue.valueStartIndex = posCurrent
+    returnValue.valueEndIndex = posCurrent + 3
+    returnValue.value = VALUE_NULL
+    
+    posCurrent = posCurrent + 4
+
+ElseIf Mid(JsonString, posCurrent, 3) = VALUE_NAN Then    'NaN
+    
+    returnValue.valueType = JSONFieldType_nan
+    returnValue.valueStartIndex = posCurrent
+    returnValue.valueEndIndex = posCurrent + 2
+    returnValue.value = VALUE_NAN
+    
+    posCurrent = posCurrent + 3
+
+ElseIf Mid(JsonString, posCurrent, 1) = CHAR_OPEN_ARRAY Then    'Array
+    returnValue.valueType = JSONFieldType_array
+    returnValue.valueStartIndex = posCurrent
+    'For Array and Objects, contents will be parsed outside only if necessary
+    
+
+ElseIf Mid(JsonString, posCurrent, 1) = CHAR_OPEN_OBJECT Then    'Object
+    returnValue.valueType = JSONFieldType_object
+    returnValue.valueStartIndex = posCurrent
+    'For Arrays and Objects, contents will be parsed outside only if necessary
+
+Else
+    Err.Raise 500, , "libJSON: ERROR: getNextKeyOnLevel: cannot resolve value type for field " & returnValue.key & " in object starting at: " & objectOpenIndex
+End If
+
+getNextKeyOnLevel = returnValue
+
+End Function
+
+Public Function getJSONFieldValue(JsonString As String, fieldName As String, Optional valueIfNotFound As Variant = "", Optional valueIfNull As Variant = VALUE_NULL, Optional valueIfNaN As Variant = VALUE_NAN) As Variant
+
+Dim tempString As String
+
+Dim currentPath() As String
+Dim targetPath() As String
+Dim currentDepth As Integer    'Zero-Based
+Dim targetDepth As Integer     'Zero-Based
+Dim kvPair As JSONKeyValuePair
+
+Dim referencePoint() As Long
+
+'String Parsing
+Dim currentPos As Long
+
+tempString = sanitizeJSON(JsonString)
+targetPath = Split(fieldName, JSON_PATH_DELIMITER)
+targetDepth = UBound(targetPath) - LBound(targetPath)
+
+'Initialization
+currentPos = 1
+currentDepth = 0
+ReDim referencePoint(0 To 0)
+referencePoint(0) = 1
+
+Do While currentPos <= Len(tempString)
+    
+    kvPair = getNextKeyOnLevel(tempString, referencePoint(currentDepth), currentPos)
+    
+    'if all fields are exausted, return
+    If kvPair.valueType = JSONFieldType_No_Field Then
+        getJSONFieldValue = valueIfNotFound
+        Debug.Print Now() & " - libJSON.getJSONFieldValue: Field '" & fieldName & "' does not exist in the provided JSON."
+        Exit Function
+    End If
+    
+    If targetPath(currentDepth) = kvPair.key Then
+        
+        If currentDepth < targetDepth Then
+            'expected a branch but found a leaf
+            If kvPair.valueType <> JSONFieldType_object Then
+                getJSONFieldValue = valueIfNotFound
+                Debug.Print Now() & " - libJSON.getJSONFieldValue: Field '" & fieldName & "' does not exist in the provided JSON. Search is interrupted at level '" & kvPair.key & "' (current depth: " & currentDepth + 1 & "/" & targetDepth + 1 & ")"
+                Exit Function
+            Else
+                'navigate the tree to the next level
+                currentDepth = currentDepth + 1
+                ReDim Preserve referencePoint(0 To currentDepth)
+                referencePoint(currentDepth) = kvPair.valueStartIndex
+                currentPos = referencePoint(currentDepth)
+            End If
+        Else
+            'found the target
+            If kvPair.valueType = JSONFieldType_array Then
+                getJSONFieldValue = parseArray(tempString, kvPair.valueStartIndex)
+                
+            ElseIf kvPair.valueType = JSONFieldType_object Then
+                getJSONFieldValue = parseObject(tempString, kvPair.valueStartIndex)
+                
+            ElseIf kvPair.valueType = JSONFieldType_bool Then
+                getJSONFieldValue = parseBool(kvPair.value)
+                
+            ElseIf kvPair.valueType = JSONFieldType_float Then
+                getJSONFieldValue = parseDecimal(kvPair.value)
+            
+            ElseIf kvPair.valueType = JSONFieldType_literal Then
+                getJSONFieldValue = parseLiteral(kvPair.value)
+                
+            ElseIf kvPair.valueType = JSONFieldType_nan Then
+                getJSONFieldValue = valueIfNaN
+            
+            ElseIf kvPair.valueType = JSONFieldType_null Then
+                getJSONFieldValue = valueIfNull
+                
+            ElseIf kvPair.valueType = JSONFieldType_number Then
+                getJSONFieldValue = parseInteger(kvPair.value)
+            
+            Else
+                Debug.Print Now() & " - libJSON.getJSONFieldValue: Unexpected Value Type (" & kvPair.valueType & ")"
+                Err.Raise 500, , "libJSON: getJSONFieldValue: field type not supported for field " & kvPair.key
+            End If
+            
+            'Return the value
+            Exit Function
+            
+        End If
+    Else
+    
+        'Key is not the one we are looking for, set up for the next key search
+        If kvPair.valueType = JSONFieldType_array Then
+            'Array -> Skip the entire array
+            currentPos = getArrayEnd(tempString, kvPair.valueStartIndex) + 1
+        ElseIf kvPair.valueType = JSONFieldType_object Then
+            'Object: Skip the entire object
+            currentPos = getObjectEnd(tempString, kvPair.valueStartIndex) + 1
+        Else
+            currentPos = kvPair.valueEndIndex + 1
+        End If
+        
+    End If
+
+Loop
+
 End Function
 
 
+Public Function getJSONArrayValue(JsonArray As String) As String()
 
-' JSONString: the full JSON object that need to be parsed. Must start with the { character, and ends when the matching } is found. Nothing is parsed beyond that
-' fieldName: the full path of the field, starting from the JSON object root. ex: "./level1/level2/level3/fieldname". The initial "./" can be omitted
-' valueType: the return type expected for the field (numeric or literal)
-' startFrom: the starting point for the JSON object to be parsed inside the string, in case only a substring need to be parsed. The first character from the starting point must still be the { character
-Public Function getJSONFieldValue(jsonString As String, fieldName As String, valueType As JSONFieldType, Optional startFrom As Long = 1, Optional valueIfNotFound As Variant = "", Optional valueIfNull As Variant = "", Optional useFastImpl As Boolean = False) As Variant
+Dim tempString As String
 
-Dim tempJSON As String
+tempString = sanitizeJSON(JsonArray)
 
-Dim pathArr() As String
-Dim i As Integer
-Dim currentPath As String
-
-Dim currentPosition As Long
-Dim searchLevel As Integer
-Dim currentLevel As Integer
-
-Dim instrOpen As Long
-Dim instrClose As Long
-Dim instrSearch As Long
-
-Dim fieldLookup As Long
-Dim nestUpLookup As Long
-Dim nestDownLookup As Long
-
-'remove unnecessary characters from start/end, and newlines, and in case start position is not 1 then also ignore all characters until the start position
-tempJSON = Trim(Replace(Replace(Right(jsonString, Len(jsonString) - startFrom + 1), vbCrLf, ""), vbCr, ""))
-
-'workaround to parse JSON arrays
-'creates a normal JSON with an array field, named JSONARRAY
-If fieldName = "" And valueType = JSONFieldType_array Then
-    tempJSON = "{""JSONARRAY"": " & tempJSON & "}"
-End If
-
-'check that the first non blank character is a {
-If Left(tempJSON, 1) <> "{" Then
-    Debug.Print "getJSONFieldValue: the provided JSON String is not a valid JSON object, missing '{' at the start."
-    getJSONFieldValue = valueIfNotFound
-    Exit Function
-End If
-
-'split the path into an array, so it can be easily navigated from root to leaves
-If fieldName = "" Or fieldName = "." Then
-    pathArr = Split("JSONARRAY", JSON_PATH_DELIMITER)
-ElseIf Left(fieldName, 2) = "./" Then
-    pathArr = Split(Right(fieldName, Len(fieldName) - 2), JSON_PATH_DELIMITER)
-Else
-    pathArr = Split(fieldName, JSON_PATH_DELIMITER)
-End If
-
-
-'Optimization:
-'check if all the levels needed are present in the string somewhere, and in the correct order at least
-currentPosition = 1
-For searchLevel = LBound(pathArr) To UBound(pathArr)
-    currentPosition = InStr(currentPosition, tempJSON, pathArr(searchLevel), vbTextCompare)
-    If currentPosition = 0 Then
-        'one of the levels needed to construct the path is missing, so the field cannot be found
-        If valueType = JSONFieldType_array Then
-            getJSONFieldValue = Split(Empty)
-        Else
-            getJSONFieldValue = valueIfNotFound
-        End If
-        
-        Debug.Print "getJSONFieldValue: cannot construct path " & fieldName & ", the field cannot be found in the JSON Object."
-        Exit Function
-    Else
-        currentPosition = currentPosition + 1
-    End If
-Next searchLevel
-
-'reset current Position
-currentPosition = 2  'ignore the first bracket, since we know the first character is always a "{"
-
-searchLevel = LBound(pathArr)    'start looking for the initial term
-currentLevel = searchLevel       'initially inside the first parenthesis
-
-While currentPosition < Len(tempJSON)
-    
-    instrOpen = InStr(currentPosition, tempJSON, "{", vbTextCompare)
-    
-    If instrOpen = 0 Then
-        instrOpen = Len(tempJSON) + 1
-    End If
-    
-    instrClose = InStr(currentPosition, tempJSON, "}", vbTextCompare)
-    
-    If currentLevel = searchLevel Then
-        instrSearch = InStr(currentPosition, tempJSON, """" & pathArr(searchLevel) & """:", vbTextCompare)
-    Else
-        instrSearch = Len(tempJSON) + 1
-    End If
-    
-    If instrSearch <> 0 And instrSearch < instrOpen And instrSearch < instrClose And currentLevel = searchLevel Then
-        'search term found
-        If searchLevel = UBound(pathArr) Then
-            'get the value and return
-            Dim instr1 As Long, instr2 As Long, instr3 As Long
-            
-            instr1 = InStr(instrSearch, tempJSON, ":", vbTextCompare) + 1
-            
-            'check that the requested value is not null
-            If LCase(Mid(tempJSON, instr1, 4)) = "null" Then
-                getJSONFieldValue = valueIfNull
-            
-            ElseIf valueType = JSONFieldType_literal Then
-            
-                instr1 = InStr(instr1, tempJSON, """", vbTextCompare) + 1
-                instr2 = InStr(instr1, tempJSON, """", vbTextCompare)
-                
-                getJSONFieldValue = Mid(tempJSON, instr1, instr2 - instr1)
-                
-            ElseIf valueType = JSONFieldType_number Then
-                
-                instr2 = InStr(instr1, tempJSON, ",", vbTextCompare)
-                instr3 = InStr(instr1, tempJSON, "}", vbTextCompare)
-                
-                If instr2 < instr3 And instr2 <> 0 Then
-                    getJSONFieldValue = CLng(Trim(Mid(tempJSON, instr1, instr2 - instr1)))
-                Else
-                    getJSONFieldValue = CLng(Trim(Mid(tempJSON, instr1, instr3 - instr1)))
-                End If
-                
-            ElseIf valueType = JSONFieldType_float Then
-                
-                instr2 = InStr(instr1, tempJSON, ",", vbTextCompare)
-                instr3 = InStr(instr1, tempJSON, "}", vbTextCompare)
-                
-                Dim sep As String
-                
-                If Application.UseSystemSeparators Then
-                    sep = Application.International(xlDecimalSeparator)
-                Else
-                    sep = Application.DecimalSeparator
-                End If
-                
-                If instr2 < instr3 And instr2 <> 0 Then
-                    getJSONFieldValue = CDbl(Replace(Trim(Mid(tempJSON, instr1, instr2 - instr1)), ".", sep))
-                Else
-                    getJSONFieldValue = CDbl(Replace(Trim(Mid(tempJSON, instr1, instr3 - instr1)), ".", sep))
-                End If
-            ElseIf valueType = JSONFieldType_array Then
-            
-                Dim returnArr() As String
-                Dim arrLevel As Integer
-                Dim inArray As Boolean
-                Dim arrayPos As Long
-                Dim elemStart As Long
-                Dim elemCount As Integer
-                inArray = True
-                arrLevel = 0
-                elemCount = 0
-                
-                arrayPos = InStr(instr1, tempJSON, "[", vbTextCompare) + 1
-                
-                While inArray
-                    If arrLevel = 0 Then
-                        'valid continuations:
-                        '    ]  - close array
-                        '    {  - new object (only first object in list
-                        '    ,{ - new object (from second onwards)
-                        instr1 = InStr(arrayPos, tempJSON, "]", vbTextCompare)
-                        If instr1 <= 0 Then
-                            Debug.Print "getJSONFieldValue: list at path " & fieldName & " doesn't have a matching closing bracket (])."
-                            getJSONFieldValue = valueIfNotFound
-                            Exit Function
-                        End If
-                        
-                        instr2 = InStr(arrayPos, tempJSON, "{", vbTextCompare)
-                        
-                        '
-                        If instr1 < instr2 Or instr2 = 0 Then
-                            getJSONFieldValue = returnArr
-                            Exit Function
-                        Else
-                            
-                            arrayPos = instr2 + 1
-                            elemStart = instr2
-                            arrLevel = arrLevel + 1
-                            
-                        End If
-                        
-                    ElseIf arrLevel > 0 Then
-                        
-                        'valid continuations:
-                        '    { - increase level by one (may be missing)
-                        '    } - decrease level by one (must be present)
-                        instr1 = InStr(arrayPos, tempJSON, "{", vbTextCompare)
-                        instr2 = InStr(arrayPos, tempJSON, "}", vbTextCompare)
-                        
-                        If instr1 = 0 Or instr2 < instr1 Then
-                            arrLevel = arrLevel - 1
-                            
-                            'if we returned to level 0, we isolated a new array element
-                            If arrLevel = 0 Then
-                                ReDim Preserve returnArr(0 To elemCount)
-                                returnArr(elemCount) = Mid(tempJSON, elemStart, instr2 - elemStart + 1)
-                                elemCount = elemCount + 1
-                            End If
-                            
-                            arrayPos = instr2 + 1
-                            
-                        Else
-                            
-                            arrLevel = arrLevel + 1
-                            arrayPos = instr1 + 1
-                            
-                        End If
-                        
-                    End If
-                Wend
-            ElseIf valueType = JSONFieldType_bool Then
-                
-                instr2 = InStr(instr1, tempJSON, ",", vbTextCompare)
-                instr3 = InStr(instr1, tempJSON, "}", vbTextCompare)
-                
-                If instr2 < instr3 And instr2 <> 0 Then
-                    getJSONFieldValue = CBool(Trim(Mid(tempJSON, instr1, instr2 - instr1)))
-                Else
-                    getJSONFieldValue = CBool(Trim(Mid(tempJSON, instr1, instr3 - instr1)))
-                End If
-            
-            ElseIf valueType = JSONFieldType_object Then
-                
-                Dim objectStart As Long
-                Dim relativeLevel As Integer
-                
-                objectStart = InStr(instr1, tempJSON, "{", vbTextCompare)
-                currentPosition = objectStart + 1
-                
-                relativeLevel = 1
-                
-                While currentPosition <= Len(tempJSON) And currentPosition > 0
-                
-                    instr1 = InStr(currentPosition, tempJSON, "{", vbTextCompare)
-                    instr2 = InStr(currentPosition, tempJSON, "}", vbTextCompare) 'this should never be 0, as there must be a closing bracket at the very end of the object
-                    
-                    If instr1 > 0 And instr1 < instr2 Then    'increase level
-                        relativeLevel = relativeLevel + 1
-                        currentPosition = instr1 + 1
-                        
-                    Else    'decrease level
-                        relativeLevel = relativeLevel - 1
-                        currentPosition = instr2 + 1
-                    End If
-                    
-                    'check if the character was the closing character
-                    If relativeLevel = 0 Then
-                        getJSONFieldValue = Trim(Mid(tempJSON, objectStart, instr2 - objectStart + 1))
-                        Exit Function
-                    End If
-
-                Wend
-                
-                
-            ElseIf valueType = JSONFieldType_unknown Then
-            
-                instr2 = InStr(instr1, tempJSON, ",", vbTextCompare)
-                instr3 = InStr(instr1, tempJSON, "}", vbTextCompare)
-                
-                If instr2 < instr3 And instr2 <> 0 Then
-                    getJSONFieldValue = Trim(Mid(tempJSON, instr1, instr2 - instr1))
-                Else
-                    getJSONFieldValue = Trim(Mid(tempJSON, instr1, instr3 - instr1))
-                End If
-            End If
-            
-            Exit Function
-            
-        Else
-            'keep navigating inside
-            currentPosition = InStr(instrSearch, tempJSON, "{", vbTextCompare) + 1
-            searchLevel = searchLevel + 1
-            currentLevel = currentLevel + 1
-            
-        End If
-        
-        
-    ElseIf instrOpen < instrClose And instrOpen <> 0 Then
-        currentLevel = currentLevel + 1
-        currentPosition = instrOpen + 1
-        
-    Else  'instrClose  < instrOpen
-        currentLevel = currentLevel - 1
-        currentPosition = instrClose + 1
-        
-    End If
-    
-    
-    'check if we fell out of the loop
-    If currentLevel < searchLevel Then
-        Dim exPath As String
-        
-        exPath = "."
-        
-        For i = LBound(pathArr) To searchLevel
-            exPath = exPath & JSON_PATH_DELIMITER & pathArr(i)
-        Next i
-        
-        Debug.Print "getJSONFieldValue: cannot construct path " & exPath & "."
-        getJSONFieldValue = valueIfNotFound
-        Exit Function
-        
-    End If
-Wend
+getJSONArrayValue = parseArray(tempString, 1)
 
 End Function
 
@@ -553,11 +694,7 @@ End If
 
 Dim jsonText As String
 
-'If Left(inputText, 1) = "[" Then
-'    jsonText = "{""ARRAY"":" & inputText & "}"
-'Else
-    jsonText = inputText
-'End If
+jsonText = inputText
 
 maxLen = Len(jsonText)
 

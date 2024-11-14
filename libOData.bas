@@ -59,8 +59,8 @@ If response.status <> httpResponseOk Then
     Exit Function
 End If
 
-oauthToken = libJSON.getJSONFieldValue(response.text, "access_token", JSONFieldType_literal, 1, "")
-expiration = libJSON.getJSONFieldValue(response.text, "expires_in", JSONFieldType_number, 1, 0)
+oauthToken = libJSON.getJSONFieldValue(response.text, "access_token")
+expiration = libJSON.getJSONFieldValue(response.text, "expires_in", 1)
 oauthTokenExpiration = Now() + (expiration * OAUTH_TOKEN_VALIDITY_THRESHOLD_RATE) / SECONDS_IN_A_DAY
 
 If oauthToken <> "" And expiration > 0 Then
