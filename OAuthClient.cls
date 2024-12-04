@@ -1,33 +1,57 @@
-Attribute VB_Name = "libOData"
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "OAuthClient"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
 Option Explicit
-
-Private Const DEFAULT_OAUTH_CLIENT_FILENAME As String = "oauth.json"
 
 Private Const OAUTH_TOKEN_VALIDITY_THRESHOLD_RATE As Double = 0.9    'After 90% of the expected validity time is elapsed, assume that the token is expired
 Private Const SECONDS_IN_A_DAY As Long = 86400
 
+Private clientId As String
+Private clientSecret As String
+Private tokenEndpoint As String
+
 Private oauthToken As String
 Private oauthTokenExpiration As Date
 
-Public Type ODataClient
-    TOKENENDPOINT As String
-    CLIENTID As String
-    CLIENTSECRET As String
-End Type
+Private isInitialized As Boolean
 
+'Class Constructor
+Private Sub Class_Initialize()
+isInitialized = False
+End Sub
 
+Public Function setClientCredentials(inputClientId As String, inputClientSecret As String, inputTokenEndpoint As String)
+
+clientId = inputClientId
+clientSecret = inputClientSecret
+tokenEndpoint = inputTokenEndpoint
+
+'reset current token
+oauthToken = ""
+oauthTokenExpiration = Now()
+
+isInitialized = True
+
+End Function
 
 Public Function hasValidOauthToken() As Boolean
-If oauthToken <> "" And Now() < oauthTokenExpiration Then
+
+If isInitialized And oauthToken <> "" And Now() < oauthTokenExpiration Then
     hasValidOauthToken = True
 Else
     hasValidOauthToken = False
 End If
 End Function
 
-Private Function requestNewToken(client As ODataClient) As Boolean
+Private Function requestNewToken() As Boolean
 
-If client.CLIENTID = "" Or client.CLIENTSECRET = "" Or client.TOKENENDPOINT = "" Then
+If clientId = "" Or clientSecret = "" Or tokenEndpoint = "" Then
     Debug.Print "Invalid credentials provided."
     requestNewToken = False
     Exit Function
@@ -39,7 +63,7 @@ oauthTokenExpiration = Now()
 
 Dim authStr As String
 
-authStr = client.CLIENTID & ":" & client.CLIENTSECRET
+authStr = clientId & ":" & clientSecret
 authStr = "Basic " & EncodeBase64(authStr)
 
 Dim reqHeaders As New Scripting.Dictionary
@@ -51,10 +75,10 @@ Dim expiration As Long
 reqHeaders.Add "Authorization", authStr
 reqHeaders.Add "Content-Type", "application/x-www-form-urlencoded"
 
-response = libHTTP.sendHTTPRequest(client.TOKENENDPOINT, httpMethod_post, "grant_type=client_credentials", reqHeaders, queryParams, client.CLIENTID, client.CLIENTSECRET)
+response = libHTTP.sendHTTPRequest(tokenEndpoint, httpMethod_post, "grant_type=client_credentials", reqHeaders, queryParams, clientId, clientSecret)
 
 If response.status <> httpResponseOk Then
-    Debug.Print "Could not get a valid token for the provided client. Token endpoint response: " & response.text
+    Debug.Print "No credentials file found in the required path/file malformed."
     requestNewToken = False
     Exit Function
 End If
@@ -75,11 +99,16 @@ End Function
 
 'Wrapper function for libHTTP.sendHTTPRequest that automatically handles authentication/authorization
 'also includes the forceTokenRefresh parameter which, when set, forces the client to retrieve a new valid oAuth token
-Public Function sendODataGenericApiRequest(oauthClient As ODataClient, url As String, method As httpMethod, body As String, ByVal headers As Dictionary, queryParams As Scripting.Dictionary, Optional userID As String = "", Optional password As String = "", Optional forceTokenRefresh As Boolean = False) As httpResponse
+Public Function sendGenericApiRequest(url As String, method As httpMethod, body As String, ByVal headers As Scripting.Dictionary, queryParams As Scripting.Dictionary, Optional userID As String = "", Optional password As String = "", Optional forceTokenRefresh As Boolean = False) As httpResponse
+
+If Not isInitialized Then
+    MsgBox "The OAuth client is not initialized"
+    Exit Function
+End If
 
 If hasValidOauthToken = False Or forceTokenRefresh Then
-    If requestNewToken(oauthClient) <> True Then
-        MsgBox "Something went wrong while retrieving a valid Authentication token from the Odata Token Endpoint, please check the log in the Debug window."
+    If requestNewToken <> True Then
+        MsgBox "Something went wrong while retrieving a valid Authentication token from the OAuth Token Endpoint, please check the log in the Debug window."
         Exit Function
     End If
 End If
@@ -89,6 +118,8 @@ If Not headers.Exists("Authorization") Then
     headers.Add "Authorization", "Bearer " & oauthToken
 End If
 
-sendODataGenericApiRequest = libHTTP.sendHTTPRequest(url, method, body, headers, queryParams, userID, password)
+sendGenericApiRequest = libHTTP.sendHTTPRequest(url, method, body, headers, queryParams, userID, password)
 
 End Function
+
+

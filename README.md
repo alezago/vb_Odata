@@ -29,21 +29,29 @@ The package also includes the following resources which can be used as standalon
 
 ### Installation
 
-1. Import the `libHTTP.bas`, `libJSON.bas`, `libOData.bas`, `utilities.bas` modules into the VBA Project.<br>
+1. Import the `OAuthClient.cls`, `libHTTP.bas`, `libJSON.bas`, `utilities.bas` modules into the VBA Project.<br>
 2. Enable the Reference to `Microsoft XML, v6.0` and `Microsoft Visual Basic for Applications Extensibility 5.3` from the Tools>References menu.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
 ### Performing OData Requests
 
-To perform an (Authenticated) request to an OData service, the function used is the following:
+To perform an (Authenticated) request to an OData service, you need to:
+<ls>
+<li>Instance an object of the OAuthClient class</li>
+<li>Set the client credentials (ClientID, Client Secret and Token Endpoint URL) for the object with the setClientCredentials method.</li>
+<li>Perform the request through the sendGenericApiRequest method</li>
+</ls>
+
+<br />
+The method signature is the following:
+
 ```vbnet
-Public Function sendODataGenericApiRequest(
-    oauthClient As ODataClient,
+Public Function sendGenericApiRequest(
     url As String,
     method As httpMethod,
     body As String,
-    ByVal headers As Dictionary,
+    ByVal headers As Scripting.Dictionary,
     queryParams As Scripting.Dictionary,
     Optional userID As String = "",
     Optional password As String = "",
@@ -53,7 +61,6 @@ Public Function sendODataGenericApiRequest(
 
 The arguments to this function are:
 <ls>
-<li><b>oauthClient:</b> an ODataClient variable, representing the Client. This has to include the following properties: CLIENTID, CLIENTSECRET, TOKENENDPOINT </li>
 <li><b>url:</b> a String value, representing the endpoint to send the request to.</li>
 <li><b>method:</b> the HTTP method of the request (GET, POST, ...)</li>
 <li><b>body:</b> a String value, representing the body of the request. Can be left blank, for request without body.</li>
@@ -71,14 +78,13 @@ The function returns a value of the  `httpResponse` type, defined as follows:
 
 ```vbnet
 Public Type httpResponse
-    status As httpResponseStatus    'Possible values: httpResponseInfo, httpResponseOk, httpResponseRedirect, httpResponseErrorClient, httpResponseErrorServer, httpResponseUnknown
+    status As httpResponseStatus    'Enum representing the overall status (1XX, 2XX, 3XX, 4XX, 5XX)
     statusCode As Integer           'Status Code of the Response
     statusText As String            'Status Text of the Response
     headers As String               'Headers of the Response
     text As String                  'Content of the Response, as raw text
 End Type
 ```
-<br />
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
@@ -109,13 +115,15 @@ The type of value returned from this function depends on the type of the field i
 |Value in the JSON Object      | Returned Value Type |
 |:--------------:| :-------------------|
 |String|String value|
-|Numeric (no decimals)|Integer value|
+|Numeric (no decimals)|LongLong value|
 |Numeric (with decimals)|Double value|
 |Boolean|Boolean value|
 |null|value defined by the valueIfNotFound parameter|
 |NaN|value defined by the valueIfNaN parameter|
 |Object|String value representing a JSON encoded Object. If neccessary, it can be further parsed the same way as the original object|
 |Array|Array of String Values. In case the array contains JSON Object, each element of the returned array can be further parsed for its fields.|
+
+The function can correctly parse numbers expressed in scientific notation.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 

@@ -69,7 +69,6 @@ Public Enum JSONFieldType
     JSONFieldType_literal = 1
     JSONFieldType_number = 2
     JSONFieldType_array = 3    'lists [] in JSON are returned as arrays of string(s). Each element will have to be then parsed separately
-    JSONFieldType_float = 4
     JSONFieldType_object = 5
     JSONFieldType_bool = 6
     JSONFieldType_null = 7
@@ -303,13 +302,60 @@ Private Function parseLiteral(str As String) As String
 parseLiteral = restoreJSON(str)
 End Function
 
-Private Function parseInteger(numString As String) As Integer
-parseInteger = CInt(numString)
+Private Function parseInteger(numString As String) As LongLong
+
+If InStr(1, numString, "E") > 0 Then
+    Dim expSplit() As String
+    expSplit = Split(numString, "E")
+    parseInteger = CLngLng(CDbl(Replace(expSplit(0), ".", Application.International(xlDecimalSeparator))) * (10 ^ CInt(expSplit(1))))
+Else
+    parseInteger = CLngLng(numString)
+End If
+
 End Function
+
+Sub testInt()
+
+Debug.Print parseInteger("1.163168865416E10")
+
+End Sub
 
 Private Function parseDecimal(numString As String) As Double
 
-parseDecimal = CDbl(Replace(numString, ".", Application.International(xlDecimalSeparator)))
+If InStr(1, numString, "E") > 0 Then
+    Dim expSplit() As String
+    expSplit = Split(numString, "E")
+    parseDecimal = CDbl(Replace(expSplit(0), ".", Application.International(xlDecimalSeparator))) * (10 ^ CInt(expSplit(1)))
+Else
+    parseDecimal = CDbl(Replace(numString, ".", Application.International(xlDecimalSeparator)))
+End If
+
+End Function
+
+Private Function parseNumber(numString) As Variant
+
+If InStr(1, numString, "E") > 0 Then
+    'Exponential (can be either integer or decimal)
+    Dim expSplit() As String
+    expSplit = Split(numString, "E")
+    
+    If CInt(expSplit(1)) > 0 And Len(expSplit(0)) - 2 <= CInt(expSplit(1)) Then
+        'integer
+        parseNumber = CLngLng(CDbl(Replace(expSplit(0), ".", Application.International(xlDecimalSeparator))) * (10 ^ CInt(expSplit(1))))
+    Else
+        'decimal
+        parseNumber = CDbl(Replace(expSplit(0), ".", Application.International(xlDecimalSeparator))) * (10 ^ CInt(expSplit(1)))
+    End If
+    
+ElseIf InStr(1, numString, ".") > 0 Then
+    'Decimal
+    parseNumber = CDbl(Replace(numString, ".", Application.International(xlDecimalSeparator)))
+
+Else
+    'Integer
+    parseNumber = CLngLng(numString)
+
+End If
 
 End Function
 
@@ -477,22 +523,30 @@ ElseIf IsNumeric(Mid(JsonString, posCurrent, 1)) Or Mid(JsonString, posCurrent, 
     returnValue.value = Mid(JsonString, posCurrent, 1)
     
     Dim hasDecimalSep As Boolean
+    Dim hasExponent As Boolean
+    
     tempChar = Mid(JsonString, posCurrent + 1, 1)
     
-    Do While (IsNumeric(tempChar) Or (hasDecimalSep = False And tempChar = ".")) And posCurrent + 1 < Len(JsonString)
+    Do While (IsNumeric(tempChar) Or (hasDecimalSep = False And tempChar = ".") Or (hasExponent = False And tempChar = "E")) And posCurrent + 1 < Len(JsonString)
         returnValue.value = returnValue.value & tempChar
         If tempChar = "." Then
             hasDecimalSep = True
+        End If
+        
+        If tempChar = "E" Then
+            hasExponent = True
+            hasDecimalSep = False
         End If
             
         posCurrent = posCurrent + 1
         tempChar = Mid(JsonString, posCurrent + 1, 1)
     Loop
     
-    If hasDecimalSep Then
-        returnValue.valueType = JSONFieldType_float
-    Else
         returnValue.valueType = JSONFieldType_number
+        returnValue.valueType = JSONFieldType_number
+    End If
+    
+    returnValue.valueType = JSONFieldType_number
     End If
     
     returnValue.valueEndIndex = posCurrent
@@ -614,9 +668,6 @@ Do While currentPos <= Len(tempString)
                 
             ElseIf kvPair.valueType = JSONFieldType_bool Then
                 getJSONFieldValue = parseBool(kvPair.value)
-                
-            ElseIf kvPair.valueType = JSONFieldType_float Then
-                getJSONFieldValue = parseDecimal(kvPair.value)
             
             ElseIf kvPair.valueType = JSONFieldType_literal Then
                 getJSONFieldValue = parseLiteral(kvPair.value)
@@ -628,7 +679,7 @@ Do While currentPos <= Len(tempString)
                 getJSONFieldValue = valueIfNull
                 
             ElseIf kvPair.valueType = JSONFieldType_number Then
-                getJSONFieldValue = parseInteger(kvPair.value)
+                getJSONFieldValue = parseNumber(kvPair.value)
             
             Else
                 Debug.Print Now() & " - libJSON.getJSONFieldValue: Unexpected Value Type (" & kvPair.valueType & ")"
