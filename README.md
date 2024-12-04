@@ -130,16 +130,14 @@ The function can correctly parse numbers expressed in scientific notation.
 ### Sample
 ```vbnet
 Sub sendTestRequest()
-  
+
   Dim url As String
   Dim headers As New Scripting.Dictionary
   Dim queryParams As New Scripting.Dictionary
 
   'Declare and set a new OAuth client
-  Dim client As odataClient
-  client.CLIENTID = "xxxx"
-  client.CLIENTSECRET = "xxxx"
-  client.TOKENENDPOINT = "www.xxxx.com/odata/token"
+  Dim client as New OAuthClient
+  client.setClientCredentials "%CLIENTID%", "%CLIENTSECRET%", "%CLIENTENDPOINT%"
   
   'Add Headers and Query Parameters to the request
   headers.Add "Sample-Header", "value"
@@ -149,7 +147,7 @@ Sub sendTestRequest()
 
   'Send the request and get the Response
   Dim response As httpResponse
-  response = libOData.sendODataGenericApiRequest(client, url, httpMethod_get, "", headers, queryParams)
+  response = client.sendGenericApiRequest(url, httpMethod_get, "", headers, queryParams)
 
   'Check the Response Status
   if response.status <> httpResponseOk Then

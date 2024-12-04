@@ -23,16 +23,6 @@ Set objXML = Nothing
 
 End Function
 
-Public Function getCurrentPath() As String
-
-Dim path As String
-path = GetLocalPath$(ThisWorkbook.FullName)
-path = Left(path, Len(path) - Len(ThisWorkbook.Name))
-
-getCurrentPath = path
-
-End Function
-
 Public Function convertTimestampToDate(ts As String) As Date
 'Input Format: YYYY-MM-DDThh:mm:ss.SSSZ"
 Dim d As String
