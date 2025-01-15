@@ -3,8 +3,8 @@ Attribute VB_Name = "libJSON"
 '* libJSON: Library for Parsing JSON in VBA
 '**************************************************************
 '* Author: Alessandro Zago
-'* Last Modified: 12/11/2024
-'* Version: 2.0.0
+'* Last Modified: 15/01/2025
+'* Version: 2.0.1
 '**************************************************************
 '* This library allows the retrieval of specific fields from an Object in JSON notation
 '* It supports:
@@ -191,7 +191,7 @@ End If
 
 Dim objStr As String
 
-objStr = Mid(JsonString, objectOpenIndex, getObjectEnd(JsonString, objectOpenIndex) - objectOpenIndex)
+objStr = Mid(JsonString, objectOpenIndex, getObjectEnd(JsonString, objectOpenIndex) - objectOpenIndex + 1)
 parseObject = restoreJSON(objStr)
 
 End Function
