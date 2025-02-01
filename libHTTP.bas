@@ -93,10 +93,12 @@ End Function
 
 Public Function sendHTTPRequest(url As String, method As httpMethod, body As String, headers As Dictionary, queryParams As Scripting.Dictionary, Optional userID As String = "", Optional password As String = "") As httpResponse
 
-Dim request As New MSXML2.XMLHTTP60
+Dim request As Object
 Dim methodStr As String
 Dim h As Variant
 Dim finalURL As String
+
+Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
 
 methodStr = getHTTPMethodAsString(method)
 
