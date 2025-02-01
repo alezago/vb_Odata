@@ -541,16 +541,9 @@ ElseIf IsNumeric(Mid(JsonString, posCurrent, 1)) Or Mid(JsonString, posCurrent, 
         posCurrent = posCurrent + 1
         tempChar = Mid(JsonString, posCurrent + 1, 1)
     Loop
-    
-        returnValue.valueType = JSONFieldType_number
-        returnValue.valueType = JSONFieldType_number
-    End If
-    
+
     returnValue.valueType = JSONFieldType_number
-    End If
-    
     returnValue.valueEndIndex = posCurrent
-    
     
 ElseIf Mid(JsonString, posCurrent, 4) = VALUE_TRUE Then    'Boolean
     
