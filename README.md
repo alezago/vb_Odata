@@ -82,7 +82,8 @@ Public Type httpResponse
     statusCode As Integer           'Status Code of the Response
     statusText As String            'Status Text of the Response
     headers As String               'Headers of the Response
-    text As String                  'Content of the Response, as raw text
+    text As String                  'Text Content of the Response, as raw text
+    body() As Byte                  'Binary Content of the Response, as Byte array
 End Type
 ```
 
