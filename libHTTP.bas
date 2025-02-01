@@ -26,6 +26,7 @@ Public Type httpResponse
     statusText As String
     headers As String 'TODO: put headers in a dictionary or an array
     text As String
+    body() as Byte
 End Type
 
 
@@ -136,5 +137,6 @@ sendHTTPRequest.status = getStatus(request.status)
 sendHTTPRequest.statusText = request.statusText
 sendHTTPRequest.headers = request.getAllResponseHeaders
 sendHTTPRequest.text = request.responseText
+sendHTTPRequest.body = request.responseBody
 
 End Function
